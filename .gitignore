@@ -1,0 +1,12 @@
+build/
+.venv/
+__pycache__/
+*.pyc
+*.vcd
+*.log
+.DS_Store
+
+results/*.csv
+results/*.json
+results/traces/*
+!results/traces/.gitkeep
