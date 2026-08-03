@@ -15,6 +15,13 @@ find_package(SystemCLanguage CONFIG REQUIRED)
 add_executable(
     soc_sim
     src/main.cpp
+    src/memory.cpp
+)
+
+target_include_directories(
+    soc_sim
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(
