@@ -16,6 +16,7 @@ add_executable(
     soc_sim
     src/main.cpp
     src/memory.cpp
+    src/interconnect.cpp
 )
 
 target_include_directories(

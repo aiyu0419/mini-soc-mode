@@ -7,14 +7,15 @@
 
 #include <systemc>
 
+#include "target.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-class Memory : public sc_core::sc_module {
+class Memory final: public sc_core::sc_module, public Target {
 public:
-    using Address = std::uint64_t;
 
     Memory(
         sc_core::sc_module_name name,
@@ -26,13 +27,13 @@ public:
         Address address,
         const std::uint8_t* source,
         std::size_t size_bytes
-    );
+    )override;
 
     void read(
         Address address,
         std::uint8_t* destination,
         std::size_t size_bytes
-    );
+    )override;
 
     [[nodiscard]]
     std::size_t size_bytes() const noexcept;

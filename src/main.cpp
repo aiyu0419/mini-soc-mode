@@ -1,30 +1,39 @@
 #include <systemc>
 
+#include "address_mapping.h"
+#include "interconnect.h"
 #include "memory.h"
 
 #include <array>
 #include <cstdint>
 #include <exception>
-#include <iomanip>
 #include <iostream>
+#include <stdexcept>
 
-class MemoryTest : public sc_core::sc_module {
+class InterconnectTest : public sc_core::sc_module {
 public:
-    Memory& memory;
-
-    MemoryTest(
+    InterconnectTest(
         sc_core::sc_module_name name,
-        Memory& memory_reference
+        Interconnect& interconnect
     )
         : sc_core::sc_module{name},
-          memory{memory_reference} {
+          interconnect_{interconnect} {
 
         SC_THREAD(run);
     }
 
 private:
     void run() {
-        constexpr Memory::Address test_address = 0x20;
+        test_valid_access();
+        test_unmapped_access();
+        test_boundary_crossing();
+
+        sc_core::sc_stop();
+    }
+
+    void test_valid_access() {
+        constexpr Address address =
+            address_map::MEMORY_BASE + 0x20;
 
         const std::array<std::uint8_t, 4> write_data{
             0x11,
@@ -35,98 +44,111 @@ private:
 
         std::array<std::uint8_t, 4> read_data{};
 
-        std::cout
-            << "[" << sc_core::sc_time_stamp() << "] "
-            << "Starting memory test\n";
-
-        memory.write(
-            test_address,
+        interconnect_.write(
+            address,
             write_data.data(),
             write_data.size()
         );
 
-        memory.read(
-            test_address,
+        interconnect_.read(
+            address,
             read_data.data(),
             read_data.size()
         );
 
         if (read_data != write_data) {
-            std::cerr
-                << "[" << sc_core::sc_time_stamp() << "] "
-                << "Memory test FAILED\n";
-
-            sc_core::sc_stop();
-            return;
+            throw std::runtime_error(
+                "Valid interconnect access failed"
+            );
         }
 
         std::cout
             << "[" << sc_core::sc_time_stamp() << "] "
-            << "Memory test PASSED: ";
-
-        for (const auto byte : read_data) {
-            std::cout
-                << "0x"
-                << std::hex
-                << std::setw(2)
-                << std::setfill('0')
-                << static_cast<unsigned int>(byte)
-                << ' ';
-        }
-
-        std::cout << std::dec << '\n';
-
-        test_invalid_access();
-
-        sc_core::sc_stop();
+            << "Valid interconnect test PASSED\n";
     }
 
-    void test_invalid_access() {
-        std::array<std::uint8_t, 8> buffer{};
+    void test_unmapped_access() {
+        std::array<std::uint8_t, 4> buffer{};
 
         try {
-            /*
-             * Memory contains 256 bytes:
-             *
-             * Valid addresses: 0x00 through 0xFF
-             *
-             * Starting at 0xFC and reading eight bytes would require
-             * addresses 0xFC through 0x103, so the request is invalid.
-             */
-            memory.read(
-                0xFC,
+            interconnect_.read(
+                0x50000000,
                 buffer.data(),
                 buffer.size()
             );
 
-            std::cerr
-                << "Bounds-check test FAILED: "
-                << "invalid access was accepted\n";
+            throw std::runtime_error(
+                "Unmapped address was incorrectly accepted"
+            );
+
         } catch (const std::out_of_range& error) {
             std::cout
                 << "[" << sc_core::sc_time_stamp() << "] "
-                << "Bounds-check test PASSED: "
+                << "Unmapped-address test PASSED: "
                 << error.what()
                 << '\n';
         }
     }
+
+    void test_boundary_crossing() {
+        std::array<std::uint8_t, 8> buffer{};
+
+        try {
+            /*
+             * Memory range:
+             *
+             * 0x00000000–0x000000FF
+             *
+             * Starting at 0xFC and reading eight bytes would
+             * cross beyond the mapped range.
+             */
+            interconnect_.read(
+                address_map::MEMORY_BASE + 0xFC,
+                buffer.data(),
+                buffer.size()
+            );
+
+            throw std::runtime_error(
+                "Boundary-crossing transaction was accepted"
+            );
+
+        } catch (const std::out_of_range& error) {
+            std::cout
+                << "[" << sc_core::sc_time_stamp() << "] "
+                << "Boundary-crossing test PASSED: "
+                << error.what()
+                << '\n';
+        }
+    }
+
+    Interconnect& interconnect_;
 };
 
 int sc_main(int argc, char* argv[]) {
     static_cast<void>(argc);
     static_cast<void>(argv);
 
-    constexpr std::size_t memory_size = 256;
-
     Memory memory{
-        "memory",
-        memory_size,
+        "main_memory",
+        address_map::MEMORY_SIZE,
         sc_core::sc_time{10, sc_core::SC_NS}
     };
 
-    MemoryTest test{
-        "memory_test",
-        memory
+    Interconnect interconnect{
+        "interconnect",
+        sc_core::sc_time{2, sc_core::SC_NS}
+    };
+
+    interconnect.map_target(
+        address_map::MEMORY_BASE,
+        address_map::MEMORY_SIZE,
+        memory,
+        "main_memory"
+    );
+
+    InterconnectTest test{
+        "interconnect_test",
+        interconnect
     };
 
     sc_core::sc_start();
