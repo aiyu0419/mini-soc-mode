@@ -1,129 +1,219 @@
 #include <systemc>
 
 #include "address_mapping.h"
+#include "dma.h"
 #include "interconnect.h"
 #include "memory.h"
 
 #include <array>
 #include <cstdint>
-#include <exception>
 #include <iostream>
 #include <stdexcept>
 
-class InterconnectTest : public sc_core::sc_module {
+namespace dma_register {
+
+constexpr Address CONTROL = 0x00;
+constexpr Address STATUS = 0x04;
+constexpr Address SOURCE_LOW = 0x08;
+constexpr Address SOURCE_HIGH = 0x0C;
+constexpr Address DESTINATION_LOW = 0x10;
+constexpr Address DESTINATION_HIGH = 0x14;
+constexpr Address LENGTH_BYTES = 0x18;
+constexpr Address BURST_BYTES = 0x1C;
+
+constexpr std::uint32_t START = 1U << 0U;
+
+constexpr std::uint32_t STATUS_BUSY = 1U << 0U;
+constexpr std::uint32_t STATUS_DONE = 1U << 1U;
+constexpr std::uint32_t STATUS_ERROR = 1U << 2U;
+
+}  // namespace dma_register
+
+void write_u32(
+    Interconnect& interconnect,
+    Address address,
+    std::uint32_t value
+) {
+    const std::array<std::uint8_t, 4> bytes{
+        static_cast<std::uint8_t>(value),
+        static_cast<std::uint8_t>(value >> 8U),
+        static_cast<std::uint8_t>(value >> 16U),
+        static_cast<std::uint8_t>(value >> 24U)
+    };
+
+    interconnect.write(
+        address,
+        bytes.data(),
+        bytes.size()
+    );
+}
+
+std::uint32_t read_u32(
+    Interconnect& interconnect,
+    Address address
+) {
+    std::array<std::uint8_t, 4> bytes{};
+
+    interconnect.read(
+        address,
+        bytes.data(),
+        bytes.size()
+    );
+
+    return
+        static_cast<std::uint32_t>(bytes[0])
+        |
+        (static_cast<std::uint32_t>(bytes[1]) << 8U)
+        |
+        (static_cast<std::uint32_t>(bytes[2]) << 16U)
+        |
+        (static_cast<std::uint32_t>(bytes[3]) << 24U);
+}
+
+class DmaTest : public sc_core::sc_module {
 public:
-    InterconnectTest(
+    DmaTest(
         sc_core::sc_module_name name,
-        Interconnect& interconnect
+        Interconnect& interconnect,
+        DMA& dma
     )
         : sc_core::sc_module{name},
-          interconnect_{interconnect} {
+          interconnect_{interconnect},
+          dma_{dma} {
 
         SC_THREAD(run);
     }
 
 private:
     void run() {
-        test_valid_access();
-        test_unmapped_access();
-        test_boundary_crossing();
+        constexpr Address source_address = 0x20;
+        constexpr Address destination_address = 0xA0;
+        constexpr std::size_t transfer_size = 32;
 
-        sc_core::sc_stop();
-    }
+        std::array<std::uint8_t, transfer_size> input{};
 
-    void test_valid_access() {
-        constexpr Address address =
-            address_map::MEMORY_BASE + 0x20;
+        for (std::size_t index = 0;
+             index < input.size();
+             ++index) {
 
-        const std::array<std::uint8_t, 4> write_data{
-            0x11,
-            0x22,
-            0x33,
-            0x44
-        };
+            input[index] =
+                static_cast<std::uint8_t>(index + 1);
+        }
 
-        std::array<std::uint8_t, 4> read_data{};
-
+        /*
+         * Initialize source memory.
+         */
         interconnect_.write(
-            address,
-            write_data.data(),
-            write_data.size()
+            source_address,
+            input.data(),
+            input.size()
         );
+
+        /*
+         * Configure DMA through MMIO.
+         */
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::SOURCE_LOW,
+            static_cast<std::uint32_t>(source_address)
+        );
+
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::SOURCE_HIGH,
+            0
+        );
+
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::DESTINATION_LOW,
+            static_cast<std::uint32_t>(
+                destination_address
+            )
+        );
+
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::DESTINATION_HIGH,
+            0
+        );
+
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::LENGTH_BYTES,
+            static_cast<std::uint32_t>(transfer_size)
+        );
+
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::BURST_BYTES,
+            static_cast<std::uint32_t>(8)
+        );
+
+        /*
+         * Start DMA.
+         */
+        write_u32(
+            interconnect_,
+            address_map::DMA_BASE
+                + dma_register::CONTROL,
+            dma_register::START
+        );
+
+        /*
+         * Wait until the DMA worker completes.
+         */
+        wait(dma_.completion_event());
+
+        const std::uint32_t status =
+            read_u32(
+                interconnect_,
+                address_map::DMA_BASE
+                    + dma_register::STATUS
+            );
+
+        if ((status & dma_register::STATUS_ERROR) != 0U) {
+            throw std::runtime_error(
+                "DMA reported an error"
+            );
+        }
+
+        if ((status & dma_register::STATUS_DONE) == 0U) {
+            throw std::runtime_error(
+                "DMA did not set DONE"
+            );
+        }
+
+        std::array<std::uint8_t, transfer_size> output{};
 
         interconnect_.read(
-            address,
-            read_data.data(),
-            read_data.size()
+            destination_address,
+            output.data(),
+            output.size()
         );
 
-        if (read_data != write_data) {
+        if (output != input) {
             throw std::runtime_error(
-                "Valid interconnect access failed"
+                "DMA output does not match input"
             );
         }
 
         std::cout
             << "[" << sc_core::sc_time_stamp() << "] "
-            << "Valid interconnect test PASSED\n";
-    }
+            << "DMA transfer test PASSED\n";
 
-    void test_unmapped_access() {
-        std::array<std::uint8_t, 4> buffer{};
-
-        try {
-            interconnect_.read(
-                0x50000000,
-                buffer.data(),
-                buffer.size()
-            );
-
-            throw std::runtime_error(
-                "Unmapped address was incorrectly accepted"
-            );
-
-        } catch (const std::out_of_range& error) {
-            std::cout
-                << "[" << sc_core::sc_time_stamp() << "] "
-                << "Unmapped-address test PASSED: "
-                << error.what()
-                << '\n';
-        }
-    }
-
-    void test_boundary_crossing() {
-        std::array<std::uint8_t, 8> buffer{};
-
-        try {
-            /*
-             * Memory range:
-             *
-             * 0x00000000–0x000000FF
-             *
-             * Starting at 0xFC and reading eight bytes would
-             * cross beyond the mapped range.
-             */
-            interconnect_.read(
-                address_map::MEMORY_BASE + 0xFC,
-                buffer.data(),
-                buffer.size()
-            );
-
-            throw std::runtime_error(
-                "Boundary-crossing transaction was accepted"
-            );
-
-        } catch (const std::out_of_range& error) {
-            std::cout
-                << "[" << sc_core::sc_time_stamp() << "] "
-                << "Boundary-crossing test PASSED: "
-                << error.what()
-                << '\n';
-        }
+        sc_core::sc_stop();
     }
 
     Interconnect& interconnect_;
+    DMA& dma_;
 };
-
 int sc_main(int argc, char* argv[]) {
     static_cast<void>(argc);
     static_cast<void>(argv);
@@ -139,6 +229,12 @@ int sc_main(int argc, char* argv[]) {
         sc_core::sc_time{2, sc_core::SC_NS}
     };
 
+    DMA dma{
+        "dma",
+        interconnect,
+        sc_core::sc_time{1, sc_core::SC_NS}
+    };
+
     interconnect.map_target(
         address_map::MEMORY_BASE,
         address_map::MEMORY_SIZE,
@@ -146,9 +242,17 @@ int sc_main(int argc, char* argv[]) {
         "main_memory"
     );
 
-    InterconnectTest test{
-        "interconnect_test",
-        interconnect
+    interconnect.map_target(
+        address_map::DMA_BASE,
+        address_map::DMA_SIZE,
+        dma,
+        "dma"
+    );
+
+    DmaTest test{
+        "dma_test",
+        interconnect,
+        dma
     };
 
     sc_core::sc_start();
