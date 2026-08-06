@@ -17,6 +17,7 @@ add_executable(
     src/main.cpp
     src/memory.cpp
     src/interconnect.cpp
+    src/dma.cpp
 )
 
 target_include_directories(
