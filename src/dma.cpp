@@ -6,6 +6,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <bytes_utils.h>
 
 DMA::DMA(
     sc_core::sc_module_name name,
@@ -56,7 +57,7 @@ void DMA::write(
     }
 
     //convert the 4 bytes of data into a 32-bit value, assuming little-endian byte order
-    const std::uint32_t value = load_u32_le(source);
+    const std::uint32_t value = byte_utils::load_u32_le(source);
 
     std::cout
         << "[" << sc_core::sc_time_stamp() << "] "
@@ -217,7 +218,7 @@ void DMA::read(
             );
     }
     //convert the 32-bit value into 4 bytes of data, assuming little-endian byte order
-    store_u32_le(value, destination);
+    byte_utils::store_u32_le(value, destination);
 
     std::cout
         << "[" << sc_core::sc_time_stamp() << "] "
@@ -261,8 +262,8 @@ void DMA::worker() {
         error_ = false;
 
         try {
-            const Address source = source_address();
-            const Address destination = destination_address();
+             Address source = source_address();
+             Address destination = destination_address();
 
             if (length_bytes_ == 0U) {
                 throw std::invalid_argument(
@@ -305,28 +306,21 @@ void DMA::worker() {
                         remaining
                     );
 
-                const Address source_address =
-                    source
-                    + static_cast<Address>(bytes_transferred);
-
-                const Address destination_address =
-                    destination
-                    + static_cast<Address>(bytes_transferred);
-
                 interconnect_.read(
-                    source_address,
+                    source,
                     burst_buffer.data(),
                     current_burst
                 );
 
                 interconnect_.write(
-                    destination_address,
+                    destination,
                     burst_buffer.data(),
                     current_burst
                 );
 
                 bytes_transferred += current_burst;
-
+                source+=static_cast<Address>(current_burst);
+                destination+=static_cast<Address>(current_burst);
                 std::cout
                     << "[" << sc_core::sc_time_stamp() << "] "
                     << name()
@@ -346,7 +340,6 @@ void DMA::worker() {
 
         } catch (const std::exception& error) {
             error_ = true;
-
             std::cerr
                 << "[" << sc_core::sc_time_stamp() << "] "
                 << name()
@@ -399,25 +392,5 @@ Address DMA::destination_address() const noexcept {
     return static_cast<Address>(address);
 }
 
-std::uint32_t DMA::load_u32_le(
-    const std::uint8_t* data
-) {
-    return
-        static_cast<std::uint32_t>(data[0])
-        |
-        (static_cast<std::uint32_t>(data[1]) << 8U)
-        |
-        (static_cast<std::uint32_t>(data[2]) << 16U)
-        |
-        (static_cast<std::uint32_t>(data[3]) << 24U);
-}
 
-void DMA::store_u32_le(
-    std::uint32_t value,
-    std::uint8_t* data
-) {
-    data[0] = static_cast<std::uint8_t>(value);
-    data[1] = static_cast<std::uint8_t>(value >> 8U);
-    data[2] = static_cast<std::uint8_t>(value >> 16U);
-    data[3] = static_cast<std::uint8_t>(value >> 24U);
-}
+

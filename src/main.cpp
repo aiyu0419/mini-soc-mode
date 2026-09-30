@@ -1,259 +1,434 @@
 #include <systemc>
 
-#include "address_mapping.h"
-#include "dma.h"
-#include "interconnect.h"
-#include "memory.h"
+#include "accelerator.h"
+#include "type.h"
 
-#include <array>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
+#include <bytes_utils.h>
 
-namespace dma_register {
 
-constexpr Address CONTROL = 0x00;
-constexpr Address STATUS = 0x04;
-constexpr Address SOURCE_LOW = 0x08;
-constexpr Address SOURCE_HIGH = 0x0C;
-constexpr Address DESTINATION_LOW = 0x10;
-constexpr Address DESTINATION_HIGH = 0x14;
-constexpr Address LENGTH_BYTES = 0x18;
-constexpr Address BURST_BYTES = 0x1C;
-
-constexpr std::uint32_t START = 1U << 0U;
-
-constexpr std::uint32_t STATUS_BUSY = 1U << 0U;
-constexpr std::uint32_t STATUS_DONE = 1U << 1U;
-constexpr std::uint32_t STATUS_ERROR = 1U << 2U;
-
-}  // namespace dma_register
-
-void write_u32(
-    Interconnect& interconnect,
-    Address address,
-    std::uint32_t value
-) {
-    const std::array<std::uint8_t, 4> bytes{
-        static_cast<std::uint8_t>(value),
-        static_cast<std::uint8_t>(value >> 8U),
-        static_cast<std::uint8_t>(value >> 16U),
-        static_cast<std::uint8_t>(value >> 24U)
-    };
-
-    interconnect.write(
-        address,
-        bytes.data(),
-        bytes.size()
-    );
-}
-
-std::uint32_t read_u32(
-    Interconnect& interconnect,
-    Address address
-) {
-    std::array<std::uint8_t, 4> bytes{};
-
-    interconnect.read(
-        address,
-        bytes.data(),
-        bytes.size()
-    );
-
-    return
-        static_cast<std::uint32_t>(bytes[0])
-        |
-        (static_cast<std::uint32_t>(bytes[1]) << 8U)
-        |
-        (static_cast<std::uint32_t>(bytes[2]) << 16U)
-        |
-        (static_cast<std::uint32_t>(bytes[3]) << 24U);
-}
-
-class DmaTest : public sc_core::sc_module {
+class ConvolutionTest final : public sc_core::sc_module {
 public:
-    DmaTest(
+
+    ConvolutionTest(
         sc_core::sc_module_name name,
-        Interconnect& interconnect,
-        DMA& dma
+        ConvolutionAccelerator& accelerator
     )
-        : sc_core::sc_module{name},
-          interconnect_{interconnect},
-          dma_{dma} {
+        : sc_core::sc_module(name),
+          accelerator_(accelerator) {
 
         SC_THREAD(run);
     }
 
 private:
+    /*
+     * These are accelerator-local addresses.
+     *
+     * They currently match accelerator.h.
+     */
+    static constexpr Address REG_CONTROL       = 0x00;
+    static constexpr Address REG_STATUS        = 0x04;
+    static constexpr Address REG_INPUT_HEIGHT  = 0x08;
+    static constexpr Address REG_INPUT_WIDTH   = 0x0C;
+    static constexpr Address REG_KERNEL_HEIGHT = 0x10;
+    static constexpr Address REG_KERNEL_WIDTH  = 0x14;
+    static constexpr Address REG_STRIDE        = 0x18;
+    static constexpr Address REG_MAC_UNITS     = 0x1C;
+    static constexpr Address REG_OUTPUT_HEIGHT = 0x20;
+    static constexpr Address REG_OUTPUT_WIDTH  = 0x24;
+    static constexpr Address REG_CYCLES_LOW    = 0x28;
+    static constexpr Address REG_CYCLES_HIGH   = 0x2C;
+
+    static constexpr Address INPUT_BUFFER_BASE  = 0x1000;
+    static constexpr Address WEIGHT_BUFFER_BASE = 0x20000;
+    static constexpr Address OUTPUT_BUFFER_BASE = 0x30000;
+
+    static constexpr std::uint32_t CONTROL_START =
+        1U << 0U;
+
+    
+
+    void write_register(
+        Address address,
+        std::uint32_t value
+    ) {
+        std::uint8_t bytes[4];
+
+        byte_utils::store_u32_le(
+            value,
+            bytes
+        );
+
+        accelerator_.write(
+            address,
+            bytes,
+            sizeof(bytes)
+        );
+    }
+
+    std::uint32_t read_register(
+        Address address
+    ) {
+        std::uint8_t bytes[4]{};
+
+        accelerator_.read(
+            address,
+            bytes,
+            sizeof(bytes)
+        );
+
+        return byte_utils::load_u32_le(bytes);
+    }
+
+    void write_i32_buffer(
+        Address address,
+        const std::vector<std::int32_t>& values
+    ) {
+        std::vector<std::uint8_t> bytes(
+            values.size() * sizeof(std::int32_t)
+        );
+
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            byte_utils::store_i32_le(
+                values[i],
+                bytes.data()
+                    + i * sizeof(std::int32_t)
+            );
+        }
+
+        accelerator_.write(
+            address,
+            bytes.data(),
+            bytes.size()
+        );
+    }
+
+    std::vector<std::int32_t> read_i32_buffer(
+        Address address,
+        std::size_t count
+    ) {
+        std::vector<std::uint8_t> bytes(
+            count * sizeof(std::int32_t)
+        );
+
+        accelerator_.read(
+            address,
+            bytes.data(),
+            bytes.size()
+        );
+
+        std::vector<std::int32_t> result(count);
+
+        for (std::size_t i = 0; i < count; ++i) {
+            result[i] = byte_utils::load_i32_le(
+                bytes.data()
+                    + i * sizeof(std::int32_t)
+            );
+        }
+
+        return result;
+    }
+
     void run() {
-        constexpr Address source_address = 0x20;
-        constexpr Address destination_address = 0xA0;
-        constexpr std::size_t transfer_size = 32;
-
-        std::array<std::uint8_t, transfer_size> input{};
-
-        for (std::size_t index = 0;
-             index < input.size();
-             ++index) {
-
-            input[index] =
-                static_cast<std::uint8_t>(index + 1);
-        }
+        std::cout
+            << "[" << sc_core::sc_time_stamp() << "] "
+            << "Convolution test started\n";
 
         /*
-         * Initialize source memory.
+         * Input:
+         *
+         *  1   2   3   4
+         *  5   6   7   8
+         *  9  10  11  12
+         * 13  14  15  16
          */
-        interconnect_.write(
-            source_address,
-            input.data(),
-            input.size()
+        const std::vector<std::int32_t> input = {
+             1,  2,  3,  4,
+             5,  6,  7,  8,
+             9, 10, 11, 12,
+            13, 14, 15, 16
+        };
+
+        /*
+         * Kernel:
+         *
+         * 1 1 1
+         * 1 1 1
+         * 1 1 1
+         */
+        const std::vector<std::int32_t> weights = {
+            1, 1, 1,
+            1, 1, 1,
+            1, 1, 1
+        };
+
+        /*
+         * Expected output:
+         *
+         * 54  63
+         * 90  99
+         */
+        const std::vector<std::int32_t> expected = {
+            54, 63,
+            90, 99
+        };
+
+        /*
+         * ------------------------------------------------
+         * Step 1: Configure accelerator registers
+         * ------------------------------------------------
+         */
+
+        write_register(
+            REG_INPUT_HEIGHT,
+            4
+        );
+
+        write_register(
+            REG_INPUT_WIDTH,
+            4
+        );
+
+        write_register(
+            REG_KERNEL_HEIGHT,
+            3
+        );
+
+        write_register(
+            REG_KERNEL_WIDTH,
+            3
+        );
+
+        write_register(
+            REG_STRIDE,
+            1
+        );
+
+        write_register(
+            REG_MAC_UNITS,
+            4
         );
 
         /*
-         * Configure DMA through MMIO.
+         * ------------------------------------------------
+         * Step 2: Transfer data into accelerator buffers
+         * ------------------------------------------------
+         *
+         * Right now this directly calls accelerator.write().
+         *
+         * Later DMA will perform these writes through
+         * the interconnect.
          */
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::SOURCE_LOW,
-            static_cast<std::uint32_t>(source_address)
+
+        write_i32_buffer(
+            INPUT_BUFFER_BASE,
+            input
         );
 
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::SOURCE_HIGH,
-            0
+        write_i32_buffer(
+            WEIGHT_BUFFER_BASE,
+            weights
         );
-
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::DESTINATION_LOW,
-            static_cast<std::uint32_t>(
-                destination_address
-            )
-        );
-
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::DESTINATION_HIGH,
-            0
-        );
-
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::LENGTH_BYTES,
-            static_cast<std::uint32_t>(transfer_size)
-        );
-
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::BURST_BYTES,
-            static_cast<std::uint32_t>(8)
-        );
-
-        /*
-         * Start DMA.
-         */
-        write_u32(
-            interconnect_,
-            address_map::DMA_BASE
-                + dma_register::CONTROL,
-            dma_register::START
-        );
-
-        /*
-         * Wait until the DMA worker completes.
-         */
-        wait(dma_.completion_event());
-
-        const std::uint32_t status =
-            read_u32(
-                interconnect_,
-                address_map::DMA_BASE
-                    + dma_register::STATUS
-            );
-
-        if ((status & dma_register::STATUS_ERROR) != 0U) {
-            throw std::runtime_error(
-                "DMA reported an error"
-            );
-        }
-
-        if ((status & dma_register::STATUS_DONE) == 0U) {
-            throw std::runtime_error(
-                "DMA did not set DONE"
-            );
-        }
-
-        std::array<std::uint8_t, transfer_size> output{};
-
-        interconnect_.read(
-            destination_address,
-            output.data(),
-            output.size()
-        );
-
-        if (output != input) {
-            throw std::runtime_error(
-                "DMA output does not match input"
-            );
-        }
 
         std::cout
             << "[" << sc_core::sc_time_stamp() << "] "
-            << "DMA transfer test PASSED\n";
+            << "Configuration and buffers loaded\n";
+
+        /*
+         * ------------------------------------------------
+         * Step 3: Start accelerator
+         * ------------------------------------------------
+         */
+
+        const sc_core::sc_time compute_start =
+            sc_core::sc_time_stamp();
+
+        write_register(
+            REG_CONTROL,
+            CONTROL_START
+        );
+
+        std::cout
+            << "[" << sc_core::sc_time_stamp() << "] "
+            << "START written\n";
+
+        /*
+         * CPU/testbench now waits.
+         *
+         * Accelerator worker runs independently.
+         */
+        wait(
+            accelerator_.completion_event()
+        );
+
+        const sc_core::sc_time compute_end =
+            sc_core::sc_time_stamp();
+
+        std::cout
+            << "[" << sc_core::sc_time_stamp() << "] "
+            << "Accelerator completion event received\n";
+
+        /*
+         * ------------------------------------------------
+         * Step 4: Read status and performance registers
+         * ------------------------------------------------
+         */
+
+        const std::uint32_t status =
+            read_register(REG_STATUS);
+
+        const std::uint32_t output_height =
+            read_register(REG_OUTPUT_HEIGHT);
+
+        const std::uint32_t output_width =
+            read_register(REG_OUTPUT_WIDTH);
+
+        const std::uint32_t cycles_low =
+            read_register(REG_CYCLES_LOW);
+
+        const std::uint32_t cycles_high =
+            read_register(REG_CYCLES_HIGH);
+
+        const std::uint64_t compute_cycles =
+            static_cast<std::uint64_t>(cycles_low)
+            |
+            (
+                static_cast<std::uint64_t>(cycles_high)
+                << 32U
+            );
+
+        /*
+         * ------------------------------------------------
+         * Step 5: Read accelerator output buffer
+         * ------------------------------------------------
+         */
+
+        const auto output =
+            read_i32_buffer(
+                OUTPUT_BUFFER_BASE,
+                expected.size()
+            );
+
+        /*
+         * ------------------------------------------------
+         * Step 6: Print results
+         * ------------------------------------------------
+         */
+
+        std::cout << "\n";
+        std::cout << "=== Accelerator Results ===\n";
+
+        std::cout
+            << "Status: 0x"
+            << std::hex
+            << status
+            << std::dec
+            << '\n';
+
+        std::cout
+            << "Output dimensions: "
+            << output_height
+            << " x "
+            << output_width
+            << '\n';
+
+        std::cout
+            << "Reported compute cycles: "
+            << compute_cycles
+            << '\n';
+
+        std::cout
+            << "Observed elapsed simulation time: "
+            << compute_end - compute_start
+            << '\n';
+
+        std::cout << "Output:\n";
+
+        for (std::size_t i = 0; i < output.size(); ++i) {
+            std::cout
+                << output[i]
+                << ' ';
+
+            if ((i + 1U) % output_width == 0U) {
+                std::cout << '\n';
+            }
+        }
+
+        /*
+         * ------------------------------------------------
+         * Step 7: Verify result
+         * ------------------------------------------------
+         */
+
+        if (output_height != 2U ||
+            output_width != 2U) {
+
+            throw std::runtime_error(
+                "Incorrect output dimensions"
+            );
+        }
+
+        if (compute_cycles != 9U) {
+            throw std::runtime_error(
+                "Incorrect compute cycle count"
+            );
+        }
+
+        if (output != expected) {
+            std::cerr << "Expected:\n";
+
+            for (const auto value : expected) {
+                std::cerr
+                    << value
+                    << ' ';
+            }
+
+            std::cerr << '\n';
+
+            throw std::runtime_error(
+                "Convolution output mismatch"
+            );
+        }
+
+        std::cout << "\n";
+        std::cout << "CONVOLUTION TEST PASSED\n";
 
         sc_core::sc_stop();
     }
 
-    Interconnect& interconnect_;
-    DMA& dma_;
+    ConvolutionAccelerator& accelerator_;
 };
-int sc_main(int argc, char* argv[]) {
-    static_cast<void>(argc);
-    static_cast<void>(argv);
 
-    Memory memory{
-        "main_memory",
-        address_map::MEMORY_SIZE,
-        sc_core::sc_time{10, sc_core::SC_NS}
-    };
 
-    Interconnect interconnect{
-        "interconnect",
-        sc_core::sc_time{2, sc_core::SC_NS}
-    };
+int sc_main(
+    int argc,
+    char* argv[]
+) {
+    (void)argc;
+    (void)argv;
 
-    DMA dma{
-        "dma",
-        interconnect,
-        sc_core::sc_time{1, sc_core::SC_NS}
-    };
-
-    interconnect.map_target(
-        address_map::MEMORY_BASE,
-        address_map::MEMORY_SIZE,
-        memory,
-        "main_memory"
+    /*
+     * MMIO register access = 5 ns
+     * Accelerator clock    = 1 ns
+     *
+     * Buffer accesses currently add no accelerator-local delay.
+     */
+    ConvolutionAccelerator accelerator(
+        "accelerator",
+        sc_core::sc_time(5, sc_core::SC_NS),
+        sc_core::sc_time(1, sc_core::SC_NS),
+        64,     // input buffer
+        36,     // weight buffer
+        16      // output buffer
     );
 
-    interconnect.map_target(
-        address_map::DMA_BASE,
-        address_map::DMA_SIZE,
-        dma,
-        "dma"
+    ConvolutionTest test(
+        "test",
+        accelerator
     );
-
-    DmaTest test{
-        "dma_test",
-        interconnect,
-        dma
-    };
 
     sc_core::sc_start();
 
