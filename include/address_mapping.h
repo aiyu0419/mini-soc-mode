@@ -14,7 +14,7 @@ constexpr Address DMA_BASE = 0x10000000;
 constexpr std::size_t DMA_SIZE = 0x00000100;
 
 constexpr Address ACCELERATOR_BASE = 0x20000000;
-constexpr std::size_t ACCELERATOR_SIZE = 0x00000100;
+constexpr std::size_t ACCELERATOR_SIZE = 0x00001000;
 
 constexpr Address INTERRUPT_BASE = 0x30000000;
 constexpr std::size_t INTERRUPT_SIZE = 0x00000100;

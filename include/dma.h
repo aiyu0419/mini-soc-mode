@@ -62,12 +62,6 @@ public:
         [[nodiscard]]
         Address destination_address() const noexcept;
 
-        [[nodiscard]]
-        static std::uint32_t load_u32_le(const std::uint8_t* data);
-
-        [[nodiscard]]
-        static void store_u32_le(std::uint32_t value,std::uint8_t* data);
-
         bool busy_{false};
         bool done_{false};
         bool error_{false};
