@@ -1,13 +1,13 @@
 #include <systemc>
 
 #include "accelerator.h"
-#include "type.h"
+#include "common/type.h"
 
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
-#include <bytes_utils.h>
+#include "common/bytes_utils.h"
 
 
 class ConvolutionTest final : public sc_core::sc_module {

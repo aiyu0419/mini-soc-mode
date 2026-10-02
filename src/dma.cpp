@@ -6,7 +6,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
-#include <bytes_utils.h>
+#include "common/bytes_utils.h"
 
 DMA::DMA(
     sc_core::sc_module_name name,
