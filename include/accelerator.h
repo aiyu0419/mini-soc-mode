@@ -2,7 +2,7 @@
 
 #include <systemc>
 
-#include "type.h"
+#include "common/type.h"
 #include "target.h"
 #include <cstddef>
 #include <cstdint>

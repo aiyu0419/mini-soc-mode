@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "type.h"
+#include "common/type.h"
 
 /*The interconnect must be able to communicate with different target types:
 - Memory

@@ -7,7 +7,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
-#include <bytes_utils.h>
+#include "common/bytes_utils.h"
 
 ConvolutionAccelerator::ConvolutionAccelerator(
     sc_core::sc_module_name name,

@@ -12,9 +12,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SystemCLanguage CONFIG REQUIRED)
 
-add_executable(
-    soc_sim
-    src/main.cpp
+# ---------------------------------
+# SoC model library
+# ---------------------------------
+
+add_library(soc_model
     src/memory.cpp
     src/interconnect.cpp
     src/dma.cpp
@@ -22,15 +24,27 @@ add_executable(
 )
 
 target_include_directories(
-    soc_sim
-    PRIVATE
+    soc_model
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(
-    soc_sim
-    PRIVATE
+    soc_model
+    PUBLIC
         SystemC::systemc
+)
+# ---------------------------------
+# Main simulator
+# ---------------------------------
+
+add_executable(soc_sim
+    src/main.cpp
+)
+
+target_link_libraries(soc_sim
+    PRIVATE
+        soc_model
 )
 
 target_compile_options(
@@ -40,3 +54,10 @@ target_compile_options(
         -Wextra
         -Wpedantic
 )
+# ---------------------------------
+# Tests
+# ---------------------------------
+
+enable_testing()
+
+add_subdirectory(tests)
